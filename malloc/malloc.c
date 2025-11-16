@@ -261,6 +261,18 @@
 #include <sys/random.h>
 #include <not-cancel.h>
 
+#include "malloc_prof.h"
+
+void __mp_on_alloc(size_t size, void *ptr)
+{
+    (void)size;
+    (void)ptr;
+    /* For now do nothing, or add a super simple debug:
+       const char msg[] = "malloc happened\n";
+       write(2, msg, sizeof(msg)-1);
+       BUT careful: write is fine, printf/malloc are NOT. */
+}
+
 /*
   Debugging:
 
@@ -3484,6 +3496,7 @@ __libc_malloc2 (size_t bytes)
 void *
 __libc_malloc (size_t bytes)
 {
+  void* result;
 #if USE_TCACHE
   size_t nb = checked_request2size (bytes);
 
@@ -3493,20 +3506,31 @@ __libc_malloc (size_t bytes)
 
       if (__glibc_likely (tc_idx < TCACHE_SMALL_BINS))
         {
-	  if (tcache->entries[tc_idx] != NULL)
-	    return tag_new_usable (tcache_get (tc_idx));
+	  if (tcache->entries[tc_idx] != NULL) 
+    {
+	    result = tag_new_usable (tcache_get (tc_idx));
+      if (result != NULL) 
+        __mp_on_alloc(bytes, result);
+      return result;
+    }
 	}
       else
         {
 	  tc_idx = large_csize2tidx (nb);
 	  void *victim = tcache_get_large (tc_idx, nb);
-	  if (victim != NULL)
-	    return tag_new_usable (victim);
+	  if (victim != NULL) {
+      result = tag_new_usable (victim);
+      if (result != NULL) __mp_on_alloc(bytes, result);
+      return result;
+
+    }
 	}
     }
 #endif
-
-  return __libc_malloc2 (bytes);
+  
+  result = __libc_malloc2 (bytes);
+  if (result != NULL) __mp_on_alloc(bytes, result);
+  return result;
 }
 libc_hidden_def (__libc_malloc)
 
