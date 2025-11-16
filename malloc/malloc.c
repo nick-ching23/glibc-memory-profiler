@@ -263,16 +263,6 @@
 
 #include "malloc_prof.h"
 
-void __mp_on_alloc(size_t size, void *ptr)
-{
-    (void)size;
-    (void)ptr;
-    /* For now do nothing, or add a super simple debug:
-       const char msg[] = "malloc happened\n";
-       write(2, msg, sizeof(msg)-1);
-       BUT careful: write is fine, printf/malloc are NOT. */
-}
-
 /*
   Debugging:
 
@@ -3509,9 +3499,10 @@ __libc_malloc (size_t bytes)
 	  if (tcache->entries[tc_idx] != NULL) 
     {
 	    result = tag_new_usable (tcache_get (tc_idx));
-      if (result != NULL) 
+      if (result != NULL) {
         __mp_on_alloc(bytes, result);
       return result;
+      }
     }
 	}
       else
@@ -3520,8 +3511,10 @@ __libc_malloc (size_t bytes)
 	  void *victim = tcache_get_large (tc_idx, nb);
 	  if (victim != NULL) {
       result = tag_new_usable (victim);
-      if (result != NULL) __mp_on_alloc(bytes, result);
+      if (result != NULL) {
+      __mp_on_alloc(bytes, result);
       return result;
+      } 
 
     }
 	}

@@ -208,6 +208,7 @@ routines = malloc mcheck mtrace obstack reallocarray \
   alloc_buffer_copy_bytes  \
   alloc_buffer_copy_string \
   alloc_buffer_create_failure \
+  malloc_prof \
 
 install-lib := libmcheck.a
 non-lib.a := libmcheck.a
