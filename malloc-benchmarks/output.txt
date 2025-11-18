@@ -1,0 +1,16 @@
+== Custom glibc (profiler ON) ==
+
+-- bench_fixed (custom, GLIBC_MALLOC_PROFILE=1) --
+bench_fixed: N=10000000, size=64
+  time: 0.472 s
+  ns per malloc+free: 47.2
+
+-- bench_var (custom, GLIBC_MALLOC_PROFILE=1) --
+bench_var: N=5000000
+  time: 0.476 s
+  ns per malloc+free: 95.2
+
+-- bench_mt (custom, GLIBC_MALLOC_PROFILE=1) --
+bench_mt: threads=4, N/thread=3000000, size=64
+  time: 0.276 s
+  ns per malloc+free: 23.0
