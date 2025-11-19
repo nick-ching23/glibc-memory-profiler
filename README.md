@@ -59,3 +59,41 @@ repo/
       --prefix=$(realpath ../glibc-install) \
       --disable-werror
   ```
+3. Compile & Install
+  ```
+  # Build using all cores
+  make -j"$(nproc)"
+  
+  # Install into ../glibc-install
+  make install
+  ```
+
+### Running the Application 
+You must explicitly invoke the custom dynamic loader from the freshly built glibc and set the library path.
+
+**Command Template:**
+```
+GLIBC_MALLOC_PROFILE=1 \
+GLIBC_MALLOC_PROFILE_BYTES=1024 \
+GLIBC_MALLOC_PROFILE_OUT=/tmp/mprof \
+/path/to/glibc-install/lib/ld-linux-<ARCH>.so.<VER> \
+    --library-path /path/to/glibc-install/lib \
+    ./your_application
+```
+
+Example (AArch64)
+```
+GLIBC_MALLOC_PROFILE=1 \
+GLIBC_MALLOC_PROFILE_BYTES=1024 \
+GLIBC_MALLOC_PROFILE_OUT=/tmp/mprof \
+~/Desktop/glibc-install/lib/ld-linux-aarch64.so.1 \
+    --library-path ~/Desktop/glibc-install/lib \
+    ./test_st
+```
+
+## Loader Names by Architecture
+
+| Architecture   | Loader                     |
+|----------------|-----------------------------|
+| ARM64 (AArch64) | `ld-linux-aarch64.so.1`     |
+| x86_64          | `ld-linux-x86-64.so.2`      |
