@@ -9,7 +9,30 @@ Designed for high-performance production environments, this profiler avoids the 
 
 ---
 
-## 🔧 Design Overview
+## Key Source Files
+
+The profiler is integrated directly into glibc’s `malloc` subsystem. The main files involved in this prototype are:
+
+- **`malloc/malloc.c`**  
+  Core malloc implementation. Fast-path hooks and threshold checks are inserted here to ensure the profiler runs with minimal overhead.
+
+- **`malloc/malloc_prof.c`**  
+  Implementation of the sampling profiler:
+  - TLS state & per-thread counters  
+  - Fast-path decrement logic  
+  - Slow-path sampling handler  
+  - Per-thread hash table aggregation  
+  - Output serialization routines  
+
+- **`malloc/malloc_prof.h`**  
+  Header exposing profiler interfaces and TLS state structures.  
+  Contains:
+  - Profiler configuration flags  
+  - TLS layout  
+  - Function declarations for the slow path  
+  - Inline fast-path helpers  
+
+## Design Overview
 
 The profiler is built around a **Fast Path / Slow Path** architecture:
 
@@ -34,7 +57,7 @@ The profiler is built around a **Fast Path / Slow Path** architecture:
 
 ---
 
-## 🛠️ Build & Install
+## Build & Install
 
 This project requires an **out-of-tree build**.  
 Your workspace should look like:
