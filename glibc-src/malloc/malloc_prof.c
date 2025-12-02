@@ -2,7 +2,6 @@
 - have a look at using compiler flags for profiler off 
 */
 
-#define _GNU_SOURCE
 #include <stddef.h>
 #include <stdint.h>
 #include <unistd.h>
@@ -27,6 +26,16 @@ static const char *mp_out_base = NULL;               /* binary dump path */
 /* Per-thread TLS state */
 __thread struct __mp_tls __mp_tls_state;
 
+
+/* ------------------------------------------------------
+ * External hook (weak): downstream tools may override.
+ * ----------------------------------------------------*/
+
+void
+__mp_on_sample(struct mp_sample_ctx *ctx)
+{
+    (void) ctx; /* default: no-op */
+}
 
 /* ------------------------------------------------------
  * Initialization
@@ -119,7 +128,6 @@ mp_record_site(struct __mp_tls *st, uintptr_t pc, size_t size)
     st->site_overflow++;
 }
 
-
 /* ------------------------------------------------------
  * Allocation hook called from malloc.c
  * ----------------------------------------------------*/
@@ -127,9 +135,7 @@ mp_record_site(struct __mp_tls *st, uintptr_t pc, size_t size)
 void
 __mp_on_alloc(size_t size, void *ptr)
 {
-    (void)ptr; /* not needed for aggregation */
-
-    mp_global_init_if_needed();
+     mp_global_init_if_needed();
     if (!mp_global_enabled)
         return;
 
@@ -138,30 +144,47 @@ __mp_on_alloc(size_t size, void *ptr)
 
     st->alloc_count++;
 
-    uint64_t stride = mp_sample_stride_bytes;
+    uint64_t stride    = mp_sample_stride_bytes;
     uint64_t remaining = st->bytes_until_sample;
 
-    /* Fast path */
+    /* Fast path: just decrement per-thread byte counter. */
     if (__glibc_likely(size < remaining)) {
         st->bytes_until_sample = remaining - size;
         return;
     }
 
-    /* Slow path: sample event */
-    size_t consumed = size - remaining;
-    uint64_t samples = 1 + consumed / stride;
+    /* Slow path: we crossed the sampling threshold. */
+    size_t   consumed = size - remaining;
+    uint64_t samples  = 1 + consumed / stride;
 
     st->sample_count += samples;
 
-    /* capture caller PC one frame above */
-    uintptr_t pc = (uintptr_t)__builtin_return_address(0);
+    /* Capture PCs: internal allocator + user callsite. */
+    void *alloc_pc = __builtin_return_address(0);
+    
+    #pragma GCC diagnostic push
+    #pragma GCC diagnostic ignored "-Wframe-address"
+        void *user_pc  = __builtin_return_address(1);
+    #pragma GCC diagnostic pop
 
-    /* record sample */
-    mp_record_site(st, pc, size);
+    /* Aggregate by user PC (if available). */
+    uintptr_t pc_key = (uintptr_t) user_pc;
+    mp_record_site(st, pc_key, size);
 
-    /* reset bytes_until_sample */
+    /* Reset bytes_until_sample for the next window. */
     uint64_t overshoot = consumed % stride;
     st->bytes_until_sample = stride - overshoot;
+
+    /* Build sample context and invoke the external hook. */
+    struct mp_sample_ctx ctx = {
+        .user_pc  = user_pc,
+        .alloc_pc = alloc_pc,
+        .ptr      = ptr,
+        .size     = size,
+        .tstate   = st,
+    };
+
+    __mp_on_sample(&ctx);
 }
 
 
