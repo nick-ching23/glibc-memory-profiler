@@ -30,11 +30,42 @@ __thread struct __mp_tls __mp_tls_state;
 /* ------------------------------------------------------
  * External hook (weak): downstream tools may override.
  * ----------------------------------------------------*/
+// void
+// __mp_on_sample(struct mp_sample_ctx *ctx)
+// {
+//     (void)ctx;
+//     const char msg[] = "[glibc mp] sample hit\n";
+//     (void)write(STDERR_FILENO, msg, sizeof msg - 1);
+// }
 
 void
 __mp_on_sample(struct mp_sample_ctx *ctx)
 {
-    (void) ctx; /* default: no-op */
+    (void) ctx;  /* default: no-op */
+}
+
+/* ------------------------------------------------------
+ * Runtime registration API for plugins.
+ * ----------------------------------------------------*/
+
+/* Single global handler; later registrations overwrite earlier ones. */
+static mp_sample_handler_t mp_handler = NULL;
+
+/* Simple registration: no locking, last writer wins. */
+int
+__mp_register_handler(mp_sample_handler_t cb)
+{
+    mp_handler = cb;
+    return 0;
+}
+
+/* Internal helper to invoke the registered handler, if any. */
+static inline void
+mp_invoke_handler(struct mp_sample_ctx *ctx)
+{
+    mp_sample_handler_t cb = mp_handler;
+    if (cb != NULL)
+        cb(ctx);
 }
 
 /* ------------------------------------------------------
@@ -135,7 +166,7 @@ mp_record_site(struct __mp_tls *st, uintptr_t pc, size_t size)
 void
 __mp_on_alloc(size_t size, void *ptr)
 {
-     mp_global_init_if_needed();
+    mp_global_init_if_needed();
     if (!mp_global_enabled)
         return;
 
@@ -159,33 +190,33 @@ __mp_on_alloc(size_t size, void *ptr)
 
     st->sample_count += samples;
 
-    /* Capture PCs: internal allocator + user callsite. */
+    /* Capture internal allocator PC (always valid for this frame). */
     void *alloc_pc = __builtin_return_address(0);
-    
-    #pragma GCC diagnostic push
-    #pragma GCC diagnostic ignored "-Wframe-address"
-        void *user_pc  = __builtin_return_address(1);
-    #pragma GCC diagnostic pop
 
-    /* Aggregate by user PC (if available). */
-    uintptr_t pc_key = (uintptr_t) user_pc;
+    /* Aggregate by alloc_pc (internal site) for now. */
+    uintptr_t pc_key = (uintptr_t) alloc_pc;
     mp_record_site(st, pc_key, size);
 
     /* Reset bytes_until_sample for the next window. */
     uint64_t overshoot = consumed % stride;
     st->bytes_until_sample = stride - overshoot;
 
-    /* Build sample context and invoke the external hook. */
+    /* Build sample context. We leave user_pc = NULL for now. */
     struct mp_sample_ctx ctx = {
-        .user_pc  = user_pc,
+        .user_pc  = NULL,      /* reserved for future use / other arches */
         .alloc_pc = alloc_pc,
         .ptr      = ptr,
         .size     = size,
         .tstate   = st,
     };
 
+    /* Build-time extension point (weak hook). */
     __mp_on_sample(&ctx);
+
+    /* Runtime extension point (registration API). */
+    mp_invoke_handler(&ctx);
 }
+
 
 
 /* ------------------------------------------------------

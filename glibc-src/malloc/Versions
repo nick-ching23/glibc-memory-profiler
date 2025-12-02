@@ -95,6 +95,9 @@ libc {
     __libc_alloc_buffer_copy_bytes;
     __libc_alloc_buffer_copy_string;
     __libc_alloc_buffer_create_failure;
+
+    __mp_register_handler;
+
   }
 }
 

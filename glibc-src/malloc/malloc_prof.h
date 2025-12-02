@@ -31,15 +31,22 @@ extern __thread struct __mp_tls __mp_tls_state;
 /* Per-sample context passed to external hook. */
 struct mp_sample_ctx {
     void            *user_pc;   /* caller of malloc / __libc_malloc (RA(1)) */
-    void            *alloc_pc;  /* internal allocator PC (RA(0)), optional    */
-    void            *ptr;       /* allocation result                          */
-    size_t           size;      /* allocation size                            */
-    struct __mp_tls *tstate;    /* pointer to this thread's profiler state    */
+    void            *alloc_pc;  /* internal allocator PC (RA(0)), optional   */
+    void            *ptr;       /* allocation result                         */
+    size_t           size;      /* allocation size                           */
+    struct __mp_tls *tstate;    /* pointer to this thread's profiler state   */
 };
 
 /* Weak hook: downstream tools may override or probe this symbol. */
 void __mp_on_sample(struct mp_sample_ctx *ctx)
     __attribute__ ((weak));
+
+/* Runtime registration API: optional handler installed by plugins. */
+typedef void (*mp_sample_handler_t)(struct mp_sample_ctx *ctx);
+
+/* Returns 0 on success. Only one handler is supported; last registration wins. */
+int __mp_register_handler(mp_sample_handler_t cb)
+    __attribute__ ((visibility ("default")));
 
 /* Called from malloc.c on each successful allocation. */
 void __mp_on_alloc(size_t size, void *ptr);
