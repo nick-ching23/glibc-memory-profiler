@@ -10,9 +10,14 @@ import statistics as stats
 
 NUM_RUNS = 100
 
-BASE_DIR = Path.home() / "Desktop" / "malloc-benchmarks"
-LOADER = Path.home() / "Desktop" / "glibc-install" / "lib" / "ld-linux-aarch64.so.1"
-LIB_PATH = Path.home() / "Desktop" / "glibc-install" / "lib"
+BASE_DIR = Path.home() / "glibc-memory-profiler" / "malloc-benchmarks"
+LOADER = Path.home() / "glibc-memory-profiler" / "glibc-install" / "lib" / "ld-linux-x86-64.so.2"
+LIB_PATH = Path.home() / "glibc-memory-profiler" / "glibc-install" / "lib"
+
+LOADER_ORIG = (
+    Path.home() / "glibc-memory-profiler" / "orig-install" / "lib" / "ld-linux-x86-64.so.2"
+)
+LIB_PATH_ORIG = Path.home() / "glibc-memory-profiler" / "orig-install" / "lib"
 
 BENCHES = [
     "bench_fixed",
@@ -24,9 +29,14 @@ BENCHES = [
 
 MODES = {
     "system": {
-        "label": "System glibc",
+        "label": "Baseline",
         "env": {},
-        "cmd": lambda bench: [f"./{bench}"],
+        "cmd": lambda bench: [
+            str(LOADER_ORIG),
+            "--library-path",
+            str(LIB_PATH_ORIG),
+            f"./{bench}",
+        ],
     },
     "custom_off": {
         "label": "Custom (prof OFF)",
@@ -59,6 +69,7 @@ MODES = {
 # -------------------------
 # Helpers
 # -------------------------
+
 
 def run_bench(bench: str, mode_name: str) -> float:
     """Run a single benchmark once in the given mode, return ns/op parsed."""
@@ -106,6 +117,11 @@ def pct_overhead(base: float, test: float) -> float:
 
 
 def main():
+    # TODO: See if this is a good way to warm up.
+    for i in range(50):
+        ns_value = run_bench("bench_fixed", "system")
+        print(f"warmup run {i}: {ns_value}")
+
     results = {}  # (bench, mode) -> list[ns]
 
     print(f"Running benchmarks in {BASE_DIR} with {NUM_RUNS} runs each.\n")
@@ -118,7 +134,7 @@ def main():
             for i in range(NUM_RUNS):
                 ns = run_bench(bench, mode_name)
                 results[key].append(ns)
-                print(f"  run {i+1}/{NUM_RUNS}: {ns:.3f} ns")
+                print(f"  run {i + 1}/{NUM_RUNS}: {ns:.3f} ns")
             print()
 
     # Summary
@@ -136,7 +152,7 @@ def main():
     for bench in BENCHES:
         sys_mean = stats.mean(results[(bench, "system")])
         off_mean = stats.mean(results[(bench, "custom_off")])
-        on_mean  = stats.mean(results[(bench, "custom_on")])
+        on_mean = stats.mean(results[(bench, "custom_on")])
 
         on_vs_sys = pct_overhead(sys_mean, on_mean)
         on_vs_off = pct_overhead(off_mean, on_mean)

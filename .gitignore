@@ -1,2 +1,4 @@
 glibc-build/
 glibc-install/
+orig-build/
+orig-install/
