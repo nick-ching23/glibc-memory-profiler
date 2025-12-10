@@ -19,25 +19,32 @@ BENCHES = [
     "bench_churn_mt",
 ]
 
+# =================================================================================================
+# EDIT ME: You can add/remove modes!
+# =================================================================================================
 MODES = {
+    # Upstream glibc. DO NOT REMOVE THIS MODE!
     "baseline": {
         "env": {},
         "cmd": lambda bench: [LD_BASELINE, "--library-path", LIB_BASELINE, f"./{bench}"],
     },
+    # Identical to baseline; verifies that the benchmark has no noise (ratio should be ~1.00).
+    "baseline2": {
+        "env": {},
+        "cmd": lambda bench: [LD_BASELINE, "--library-path", LIB_BASELINE, f"./{bench}"],
+    },
+    # Custom glibc (profiled disabled).
     "off": {
-        "env": {
-            "GLIBC_MALLOC_PROFILE": "0",
-        },
+        "env": {"GLIBC_MALLOC_PROFILE": "0"},
         "cmd": lambda bench: [LD, "--library-path", LIB, f"./{bench}"],
     },
+    # Custom glibc (profiler enabled).
     "on": {
-        "env": {
-            "GLIBC_MALLOC_PROFILE": "1",
-            "GLIBC_MALLOC_PROFILE_BYTES": "262144",  # 256KB stride
-        },
+        "env": {"GLIBC_MALLOC_PROFILE": "1", "GLIBC_MALLOC_PROFILE_BYTES": "262144"},
         "cmd": lambda bench: [LD, "--library-path", LIB, f"./{bench}"],
     },
 }
+# =================================================================================================
 
 
 def run_bench(bench: str, mode_name: str) -> float:
@@ -77,12 +84,7 @@ def run_bench(bench: str, mode_name: str) -> float:
     return ns_value
 
 
-def main():
-    # TODO: See if this is a good way to warm up.
-    print("Doing warmup runs...")
-    for i in range(50):
-        run_bench("bench_fixed", "baseline")
-
+def get_benchmark_results():
     print(f"Running benchmarks with {NUM_RUNS} runs each.\n")
     results = {}  # (bench, mode) -> list[ns]
     for bench in BENCHES:
@@ -95,35 +97,45 @@ def main():
                 results[key].append(ns)
                 print(f"  run {i + 1}/{NUM_RUNS}: {ns:.3f} ns")
             print()
+    return results
 
+
+def print_summary(results):
     print(
         "\n======================= SUMMARY (average ns per operation) ================================\n"
     )
-    print(
-        f"{'Benchmark':<18} "
-        f"{'baseline':>12} "
-        f"{'off':>12} "
-        f"{'on':>12} "
-        f"{'off/baseline':>16} "
-        f"{'on/baseline':>16}"
-    )
-    print("-" * 91)
+    print("NOTE: Value in parentheses is the ratio compared to `baseline`.\n")
+
+    header = f"{'Benchmark':<18}"
+    for mode in MODES:
+        header += f"{mode:>20}"
+    print(header)
+    print("-" * len(header))
 
     for bench in BENCHES:
-        baseline_mean = stats.mean(results[(bench, "baseline")])
-        off_mean = stats.mean(results[(bench, "off")])
-        on_mean = stats.mean(results[(bench, "on")])
-        off_over_baseline = off_mean / baseline_mean
-        on_over_baseline = on_mean / baseline_mean
+        baseline = stats.mean(results[(bench, "baseline")])
+        row = f"{bench:<18}{baseline:20.3f}"
+        for mode in MODES:
+            if mode == "baseline":
+                continue
+            value = stats.mean(results[(bench, mode)])
+            ratio = value / baseline
+            row += f"{value:8.3f} ({ratio:4.2f})".rjust(20)
+        print(row)
 
-        print(
-            f"{bench:<18} "
-            f"{baseline_mean:12.3f} "
-            f"{off_mean:12.3f} "
-            f"{on_mean:12.3f} "
-            f"{off_over_baseline:16.2f} "
-            f"{on_over_baseline:16.2f}"
-        )
+
+# TODO: See if this is a good way to warm up.
+def warm_up():
+    print("Doing warmup runs...")
+    for i in range(50):
+        run_bench("bench_fixed", "baseline")
+
+
+def main():
+    warm_up()
+
+    results = get_benchmark_results()
+    print_summary(results)
 
 
 if __name__ == "__main__":

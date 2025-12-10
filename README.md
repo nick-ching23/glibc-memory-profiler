@@ -68,14 +68,7 @@ sudo apt install bison gperf
 ```
 
 ```bash
-mkdir -p glibc-build glibc-install
-GLIBC_INSTALL=$(realpath ./glibc-install)
-
-cd glibc-build
-../glibc-src/configure --prefix="$GLIBC_INSTALL" --disable-werror
-
-make -j"$(nproc)"
-make install
+./build-glibc.sh
 ```
 
 ## Running the Application
@@ -85,6 +78,7 @@ You must explicitly invoke the custom dynamic loader from the freshly built glib
 **Command Template:**
 
 ```bash
+GLIBC_INSTALL=$(realpath ./glibc-install)
 GLIBC_MALLOC_PROFILE=1 \
 GLIBC_MALLOC_PROFILE_BYTES=1024 \
 GLIBC_MALLOC_PROFILE_OUT=/tmp/mprof \
@@ -96,6 +90,7 @@ GLIBC_MALLOC_PROFILE_OUT=/tmp/mprof \
 Example (x86_64)
 
 ```bash
+GLIBC_INSTALL=$(realpath ./glibc-install)
 GLIBC_MALLOC_PROFILE=1 \
 GLIBC_MALLOC_PROFILE_BYTES=1024 \
 GLIBC_MALLOC_PROFILE_OUT=/tmp/mprof \
