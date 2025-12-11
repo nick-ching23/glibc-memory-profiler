@@ -1,6 +1,10 @@
 /*
  * malloc_prof.c
- * - No libm dependency (custom log implementation)
+ * * Features:
+ * - Poisson Sampling (statistically unbiased)
+ * - Lock-free multi-subscriber registration
+ * - USDT Tracepoints for external observability
+ * - No external dependencies (custom log/prng implementation)
  */
 
 #include <stddef.h>
@@ -15,6 +19,18 @@
 #include <time.h>     /* Required for clock_gettime() */
 
 #include "malloc_prof.h"
+
+/* ------------------------------------------------------
+ * Upstream Integration Macros (USDT)
+ * ----------------------------------------------------*/
+
+/* * If building within full glibc with SystemTap headers, this macro 
+ * is already defined. If not, we define a no-op fallback so 
+ * the code compiles for your demo.
+ */
+#ifndef LIBC_PROBE
+# define LIBC_PROBE(name, n, ...) do { } while (0)
+#endif
 
 /* ------------------------------------------------------
  * Global profiler configuration
@@ -40,26 +56,47 @@ __mp_on_sample(struct mp_sample_ctx *ctx)
 }
 
 /* ------------------------------------------------------
- * Runtime registration API for plugins.
+ * Runtime registration API (Thread-Safe, Multi-Subscriber)
  * ----------------------------------------------------*/
 
-static mp_sample_handler_t mp_handler = NULL;
+#define MP_MAX_HANDLERS 4
+static mp_sample_handler_t mp_handlers[MP_MAX_HANDLERS] = {0};
 
+/* * Registers a callback safely using Atomics.
+ * Returns 0 on success, -1 if no slots available.
+ */
 int
 __mp_register_handler(mp_sample_handler_t cb)
 {
-    /* Simple atomic store to prevent tearing if updated live */
-    __atomic_store_n(&mp_handler, cb, __ATOMIC_RELEASE);
-    return 0;
+    if (cb == NULL) return -1;
+
+    for (int i = 0; i < MP_MAX_HANDLERS; ++i) {
+        mp_sample_handler_t expected = NULL;
+        
+        /* atomic_compare_exchange: if slot is NULL, swap in 'cb' */
+        if (__atomic_compare_exchange_n(&mp_handlers[i], 
+                                        &expected, 
+                                        cb, 
+                                        0, 
+                                        __ATOMIC_RELEASE, 
+                                        __ATOMIC_RELAXED)) {
+            return 0; /* Registered */
+        }
+    }
+    return -1; /* Registry full */
 }
 
+/* Invokes all registered listeners */
 static inline void
-mp_invoke_handler(struct mp_sample_ctx *ctx)
+mp_invoke_handlers(struct mp_sample_ctx *ctx)
 {
-    /* Atomic load */
-    mp_sample_handler_t cb = __atomic_load_n(&mp_handler, __ATOMIC_ACQUIRE);
-    if (cb != NULL)
-        cb(ctx);
+    for (int i = 0; i < MP_MAX_HANDLERS; ++i) {
+        /* Atomic load to prevent tearing */
+        mp_sample_handler_t cb = __atomic_load_n(&mp_handlers[i], __ATOMIC_ACQUIRE);
+        if (cb != NULL) {
+            cb(ctx);
+        }
+    }
 }
 
 /* ------------------------------------------------------
@@ -78,10 +115,7 @@ mp_prng_next(struct __mp_tls *st)
     return x * 0x2545F4914F6CDD1DULL;
 }
 
-/* * Fast approximation of natural log: ln(x)
- * We cannot link libm inside libc.so, so we do it manually.
- * Based on extracting the IEEE 754 exponent and a polynomial for the mantissa.
- */
+/* Fast approximation of natural log: ln(x) */
 static double
 mp_log(double x)
 {
@@ -90,25 +124,21 @@ mp_log(double x)
     /* Cast double to 64-bit int to access bits */
     uint64_t bits = *(uint64_t*)&x;
     
-    /* Extract exponent (bits 52-62) */
-    /* Bias is 1023 */
+    /* Extract exponent (bits 52-62) - bias 1023 */
     int64_t e = ((bits >> 52) & 0x7FF) - 1023;
     
-    /* Extract mantissa (bits 0-51) and set exponent to 0 (make it range [1.0, 2.0)) */
+    /* Extract mantissa, normalize to [1.0, 2.0) */
     uint64_t m_bits = (bits & 0xFFFFFFFFFFFFFULL) | (1023ULL << 52);
     double m = *(double*)&m_bits;
     
-    /* Polynomial approximation for ln(m) where m in [1.0, 2.0) 
-     * Using simple Taylor expansion for ln(1+y) where y = m-1
-     * ln(1+y) ~= y - y^2/2 + y^3/3
-     */
+    /* Polynomial for ln(m) where m in [1.0, 2.0) */
     double y = m - 1.0;
     double log_m = y * (1.0 - y * (0.5 - y * 0.33333333));
     
-    /* ln(x) = ln(m * 2^e) = ln(m) + e * ln(2) */
     return log_m + (double)e * 0.69314718056;
 }
 
+/* Compute Poisson interval: -ln(U) * Mean */
 static uint64_t
 mp_compute_next_sample(struct __mp_tls *st)
 {
@@ -118,7 +148,6 @@ mp_compute_next_sample(struct __mp_tls *st)
     
     if (__glibc_unlikely(u <= 0.0)) u = 1e-10;
 
-    /* Use our custom mp_log instead of log() */
     double val = -mp_log(u) * (double)mp_sample_stride_bytes;
     
     if (val > (double)UINT64_MAX) return UINT64_MAX;
@@ -169,8 +198,6 @@ mp_thread_init_if_needed(struct __mp_tls *st)
         uint64_t seed = (uintptr_t)st;
         struct timespec ts;
         
-        /* clock_gettime is usually in libc (or librt which is standard), 
-           but if this fails, fallback to strict simple seeding */
         if (clock_gettime(CLOCK_MONOTONIC, &ts) == 0) {
             seed ^= (uint64_t)ts.tv_nsec;
         }
@@ -246,6 +273,7 @@ __mp_on_alloc(size_t size, void *ptr)
 
     uint64_t remaining = st->bytes_until_sample;
 
+    /* Fast path */
     if (__glibc_likely(size < remaining)) {
         st->bytes_until_sample = remaining - size;
         return;
@@ -258,6 +286,7 @@ __mp_on_alloc(size_t size, void *ptr)
     uintptr_t pc_key = (uintptr_t) alloc_pc;
     mp_record_site(st, pc_key, size);
 
+    /* Recalculate Poisson interval handling overshoot */
     uint64_t next_interval = mp_compute_next_sample(st);
     long long overshoot = (long long)size - (long long)remaining;
 
@@ -275,8 +304,16 @@ __mp_on_alloc(size_t size, void *ptr)
         .tstate   = st,
     };
 
-    __mp_on_sample(&ctx);
-    mp_invoke_handler(&ctx);
+    /* * OBSERVABILITY POINT 1: USDT Probe (The Upstream Method) 
+     * Exposed to bpftrace, systemtap, perf.
+     */
+    LIBC_PROBE (memory_prof_sample, 3, size, ptr, alloc_pc);
+
+    /* * OBSERVABILITY POINT 2: Internal Callbacks (The Dev Method)
+     * Exposed to in-process tools (Leak detectors, Dashboards).
+     */
+    __mp_on_sample(&ctx);       /* Weak symbol hook */
+    mp_invoke_handlers(&ctx);   /* Registered callbacks */
 }
 
 
