@@ -7,9 +7,10 @@ import statistics as stats
 NUM_RUNS = 100
 
 LIB = Path.cwd().parent / "glibc-install" / "lib"
-LD = LIB / "ld-linux-x86-64.so.2"
+LD = LIB / "ld-linux-aarch64.so.1"          # <-- change here
+
 LIB_BASELINE = Path.cwd().parent / "orig-install" / "lib"
-LD_BASELINE = LIB_BASELINE / "ld-linux-x86-64.so.2"
+LD_BASELINE = LIB_BASELINE / "ld-linux-aarch64.so.1"   # <-- and here
 
 BENCHES = [
     "bench_fixed",

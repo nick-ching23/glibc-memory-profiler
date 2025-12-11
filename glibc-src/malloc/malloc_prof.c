@@ -1,6 +1,7 @@
 /*
-- have a look at using compiler flags for profiler off 
-*/
+ * malloc_prof.c
+ * - No libm dependency (custom log implementation)
+ */
 
 #include <stddef.h>
 #include <stdint.h>
@@ -11,6 +12,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <string.h>
+#include <time.h>     /* Required for clock_gettime() */
 
 #include "malloc_prof.h"
 
@@ -19,7 +21,7 @@
  * ----------------------------------------------------*/
 
 static int mp_global_enabled = -1;                   /* -1 = uninitialized, 0=off, 1=on */
-static uint64_t mp_sample_stride_bytes = 512 * 1024; /* default 512KB */
+static uint64_t mp_sample_stride_bytes = 512 * 1024; /* default mean stride 512KB */
 static int mp_stats_enabled = 0;                     /* dump human stats */
 static const char *mp_out_base = NULL;               /* binary dump path */
 
@@ -30,13 +32,6 @@ __thread struct __mp_tls __mp_tls_state;
 /* ------------------------------------------------------
  * External hook (weak): downstream tools may override.
  * ----------------------------------------------------*/
-// void
-// __mp_on_sample(struct mp_sample_ctx *ctx)
-// {
-//     (void)ctx;
-//     const char msg[] = "[glibc mp] sample hit\n";
-//     (void)write(STDERR_FILENO, msg, sizeof msg - 1);
-// }
 
 void
 __mp_on_sample(struct mp_sample_ctx *ctx)
@@ -48,24 +43,88 @@ __mp_on_sample(struct mp_sample_ctx *ctx)
  * Runtime registration API for plugins.
  * ----------------------------------------------------*/
 
-/* Single global handler; later registrations overwrite earlier ones. */
 static mp_sample_handler_t mp_handler = NULL;
 
-/* Simple registration: no locking, last writer wins. */
 int
 __mp_register_handler(mp_sample_handler_t cb)
 {
-    mp_handler = cb;
+    /* Simple atomic store to prevent tearing if updated live */
+    __atomic_store_n(&mp_handler, cb, __ATOMIC_RELEASE);
     return 0;
 }
 
-/* Internal helper to invoke the registered handler, if any. */
 static inline void
 mp_invoke_handler(struct mp_sample_ctx *ctx)
 {
-    mp_sample_handler_t cb = mp_handler;
+    /* Atomic load */
+    mp_sample_handler_t cb = __atomic_load_n(&mp_handler, __ATOMIC_ACQUIRE);
     if (cb != NULL)
         cb(ctx);
+}
+
+/* ------------------------------------------------------
+ * PRNG & Math (Custom implementation to avoid libm)
+ * ----------------------------------------------------*/
+
+/* Xorshift64star */
+static inline uint64_t
+mp_prng_next(struct __mp_tls *st)
+{
+    uint64_t x = st->rng;
+    x ^= x >> 12;
+    x ^= x << 25;
+    x ^= x >> 27;
+    st->rng = x;
+    return x * 0x2545F4914F6CDD1DULL;
+}
+
+/* * Fast approximation of natural log: ln(x)
+ * We cannot link libm inside libc.so, so we do it manually.
+ * Based on extracting the IEEE 754 exponent and a polynomial for the mantissa.
+ */
+static double
+mp_log(double x)
+{
+    if (x <= 0.0) return -1.0/0.0; /* -Inf */
+
+    /* Cast double to 64-bit int to access bits */
+    uint64_t bits = *(uint64_t*)&x;
+    
+    /* Extract exponent (bits 52-62) */
+    /* Bias is 1023 */
+    int64_t e = ((bits >> 52) & 0x7FF) - 1023;
+    
+    /* Extract mantissa (bits 0-51) and set exponent to 0 (make it range [1.0, 2.0)) */
+    uint64_t m_bits = (bits & 0xFFFFFFFFFFFFFULL) | (1023ULL << 52);
+    double m = *(double*)&m_bits;
+    
+    /* Polynomial approximation for ln(m) where m in [1.0, 2.0) 
+     * Using simple Taylor expansion for ln(1+y) where y = m-1
+     * ln(1+y) ~= y - y^2/2 + y^3/3
+     */
+    double y = m - 1.0;
+    double log_m = y * (1.0 - y * (0.5 - y * 0.33333333));
+    
+    /* ln(x) = ln(m * 2^e) = ln(m) + e * ln(2) */
+    return log_m + (double)e * 0.69314718056;
+}
+
+static uint64_t
+mp_compute_next_sample(struct __mp_tls *st)
+{
+    uint64_t r = mp_prng_next(st);
+    /* 53 bits of randomness for double precision */
+    double u = (r >> 11) * (1.0 / 9007199254740992.0);
+    
+    if (__glibc_unlikely(u <= 0.0)) u = 1e-10;
+
+    /* Use our custom mp_log instead of log() */
+    double val = -mp_log(u) * (double)mp_sample_stride_bytes;
+    
+    if (val > (double)UINT64_MAX) return UINT64_MAX;
+    
+    uint64_t next = (uint64_t)val;
+    return (next == 0) ? 1 : next;
 }
 
 /* ------------------------------------------------------
@@ -106,8 +165,22 @@ mp_global_init_if_needed(void)
 static inline void
 mp_thread_init_if_needed(struct __mp_tls *st)
 {
-    if (st->bytes_until_sample == 0)
-        st->bytes_until_sample = mp_sample_stride_bytes;
+    if (__glibc_unlikely(st->rng == 0)) {
+        uint64_t seed = (uintptr_t)st;
+        struct timespec ts;
+        
+        /* clock_gettime is usually in libc (or librt which is standard), 
+           but if this fails, fallback to strict simple seeding */
+        if (clock_gettime(CLOCK_MONOTONIC, &ts) == 0) {
+            seed ^= (uint64_t)ts.tv_nsec;
+        }
+        
+        seed ^= (uint64_t)getpid();
+        if (seed == 0) seed = 0xCAFEBABE;
+        
+        st->rng = seed;
+        st->bytes_until_sample = mp_compute_next_sample(st);
+    }
 }
 
 
@@ -140,22 +213,18 @@ mp_record_site(struct __mp_tls *st, uintptr_t pc, size_t size)
         struct mp_site *s = &st->sites[idx];
 
         if (s->pc == 0) {
-            /* install new site */
             s->pc = pc;
             s->sample_count = 1;
             s->total_bytes = size;
             return;
         }
         if (s->pc == pc) {
-            /* update existing */
             s->sample_count++;
             s->total_bytes += size;
             return;
         }
         idx = (idx + 1) % cap;
     }
-
-    /* table is full */
     st->site_overflow++;
 }
 
@@ -175,45 +244,38 @@ __mp_on_alloc(size_t size, void *ptr)
 
     st->alloc_count++;
 
-    uint64_t stride    = mp_sample_stride_bytes;
     uint64_t remaining = st->bytes_until_sample;
 
-    /* Fast path: just decrement per-thread byte counter. */
     if (__glibc_likely(size < remaining)) {
         st->bytes_until_sample = remaining - size;
         return;
     }
 
-    /* Slow path: we crossed the sampling threshold. */
-    size_t   consumed = size - remaining;
-    uint64_t samples  = 1 + consumed / stride;
+    /* Slow path: sampling triggered */
+    st->sample_count++;
 
-    st->sample_count += samples;
-
-    /* Capture internal allocator PC (always valid for this frame). */
     void *alloc_pc = __builtin_return_address(0);
-
-    /* Aggregate by alloc_pc (internal site) for now. */
     uintptr_t pc_key = (uintptr_t) alloc_pc;
     mp_record_site(st, pc_key, size);
 
-    /* Reset bytes_until_sample for the next window. */
-    uint64_t overshoot = consumed % stride;
-    st->bytes_until_sample = stride - overshoot;
+    uint64_t next_interval = mp_compute_next_sample(st);
+    long long overshoot = (long long)size - (long long)remaining;
 
-    /* Build sample context. We leave user_pc = NULL for now. */
+    if ((long long)next_interval > overshoot) {
+        st->bytes_until_sample = next_interval - overshoot;
+    } else {
+        st->bytes_until_sample = mp_compute_next_sample(st);
+    }
+
     struct mp_sample_ctx ctx = {
-        .user_pc  = NULL,      /* reserved for future use / other arches */
+        .user_pc  = NULL,
         .alloc_pc = alloc_pc,
         .ptr      = ptr,
         .size     = size,
         .tstate   = st,
     };
 
-    /* Build-time extension point (weak hook). */
     __mp_on_sample(&ctx);
-
-    /* Runtime extension point (registration API). */
     mp_invoke_handler(&ctx);
 }
 
@@ -300,7 +362,7 @@ mp_dump_thread_to_file(const struct __mp_tls *st)
             continue;
 
         struct mp_file_site_disk fs;
-        fs.pc           = (uint64_t)s->pc;
+        fs.pc            = (uint64_t)s->pc;
         fs.sample_count = s->sample_count;
         fs.total_bytes  = s->total_bytes;
 
@@ -331,7 +393,7 @@ __mp_dump_stats_destructor(void)
         char buf[256];
         int len = snprintf(buf, sizeof buf,
                            "malloc-prof stats: thread=%p alloc_count=%llu "
-                           "sample_count=%llu stride=%llu site_overflow=%llu\n",
+                           "sample_count=%llu mean_stride=%llu site_overflow=%llu\n",
                            (void *)st,
                            (unsigned long long)st->alloc_count,
                            (unsigned long long)st->sample_count,
