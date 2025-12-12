@@ -1,5 +1,15 @@
-bench_churn
-bench_churn_mt
-bench_fixed
-bench_mt
-bench_var
+# Ignore compiled binaries
+bin/
+
+# Ignore runtime artifacts
+artifacts/
+*.stacks
+*.folded
+*.clean
+*.svg
+*.bin
+results.md
+
+# Ignore temporary editor files
+*.swp
+.vscode/

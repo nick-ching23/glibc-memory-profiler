@@ -1,25 +1,35 @@
+# Compiler & Flags
 CC = gcc
-CFLAGS = -O2 -g -Wall -Wextra -std=c11
+CFLAGS = -O2 -Wall -Wextra -pthread -I./include
 
-# All benchmarks
-BENCHES = bench_fixed bench_var bench_mt bench_churn bench_churn_mt
+# Directories
+SRC_DIR = src
+BIN_DIR = bin
 
-all: $(BENCHES)
+# List of benchmarks to build
+# ADDED: bench_churn_mt
+TARGETS = $(BIN_DIR)/bench_churn \
+          $(BIN_DIR)/bench_churn_mt \
+          $(BIN_DIR)/bench_fixed \
+          $(BIN_DIR)/bench_mt \
+          $(BIN_DIR)/bench_threads \
+          $(BIN_DIR)/bench_var \
+          $(BIN_DIR)/test_multilistener
 
-bench_fixed: bench_fixed.c common.h
-	$(CC) $(CFLAGS) -o $@ bench_fixed.c -lpthread
+# Default Target
+all: $(BIN_DIR) $(TARGETS)
 
-bench_var: bench_var.c common.h
-	$(CC) $(CFLAGS) -o $@ bench_var.c -lpthread
+# Create bin directory
+$(BIN_DIR):
+	mkdir -p $(BIN_DIR)
 
-bench_mt: bench_mt.c common.h
-	$(CC) $(CFLAGS) -o $@ bench_mt.c -lpthread
+# Compilation Rule
+$(BIN_DIR)/%: $(SRC_DIR)/%.c
+	$(CC) $(CFLAGS) -o $@ $<
 
-bench_churn: bench_churn.c common.h
-	$(CC) $(CFLAGS) -o $@ bench_churn.c -lpthread
-
-bench_churn_mt: bench_churn_mt.c common.h
-	$(CC) $(CFLAGS) -o $@ bench_churn_mt.c -lpthread
-
+# Clean Rule
 clean:
-	rm -f $(BENCHES)
+	rm -rf $(BIN_DIR)/*
+	rm -rf artifacts/*
+
+.PHONY: all clean
