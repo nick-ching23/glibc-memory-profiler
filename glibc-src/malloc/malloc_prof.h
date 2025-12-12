@@ -11,6 +11,8 @@ struct mp_site {
     uint64_t  total_bytes;
 };
 
+extern int mp_global_enabled;
+
 /* Per-thread aggregation capacity. */
 #define MP_SITE_CAP 256    /* per-thread aggregation buckets */
 

@@ -263,6 +263,13 @@
 
 #include "malloc_prof.h"
 
+/* Avoid calling the profiler when disabled (OFF should be near-zero). */
+#define MP_ON_ALLOC(bytes_, ptr_)                                  \
+  do {                                                             \
+    if (__glibc_unlikely (mp_global_enabled > 0))                  \
+      __mp_on_alloc ((bytes_), (ptr_));                            \
+  } while (0)
+  
 /*
   Debugging:
 
@@ -3500,7 +3507,7 @@ __libc_malloc (size_t bytes)
     {
 	    result = tag_new_usable (tcache_get (tc_idx));
       if (result != NULL) {
-        __mp_on_alloc(bytes, result);
+        MP_ON_ALLOC(bytes, result);
       return result;
       }
     }
@@ -3512,7 +3519,7 @@ __libc_malloc (size_t bytes)
 	  if (victim != NULL) {
       result = tag_new_usable (victim);
       if (result != NULL) {
-      __mp_on_alloc(bytes, result);
+      MP_ON_ALLOC(bytes, result);
       return result;
       } 
 
@@ -3522,7 +3529,7 @@ __libc_malloc (size_t bytes)
 #endif
   
   result = __libc_malloc2 (bytes);
-  if (result != NULL) __mp_on_alloc(bytes, result);
+  if (result != NULL) MP_ON_ALLOC(bytes, result);
   return result;
 }
 libc_hidden_def (__libc_malloc)

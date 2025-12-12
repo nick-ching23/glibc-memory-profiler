@@ -55,7 +55,7 @@
  * Global profiler configuration
  * ----------------------------------------------------*/
 
-static int mp_global_enabled = -1;                   /* -1 = uninitialized, 0=off, 1=on */
+int mp_global_enabled = -1; /* -1 = uninitialized, 0=off, 1=on */
 static uint64_t mp_sample_stride_bytes = 512 * 1024; /* default mean stride 512KB */
 static int mp_stats_enabled = 0;                     /* dump human stats */
 static const char *mp_out_base = NULL;               /* binary dump path */
@@ -297,7 +297,7 @@ mp_record_site(struct __mp_tls *st, uintptr_t pc, size_t size)
  * Allocation hook called from malloc.c
  * ----------------------------------------------------*/
 
-void
+inline void
 __mp_on_alloc(size_t size, void *ptr)
 {
     mp_global_init_if_needed();
