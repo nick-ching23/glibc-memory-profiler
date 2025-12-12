@@ -1,6 +1,7 @@
 /*
  * malloc_prof.c
- * * Features:
+ *
+ * Features:
  * - Poisson Sampling (statistically unbiased)
  * - Lock-free multi-subscriber registration
  * - USDT Tracepoints for external observability
@@ -24,12 +25,30 @@
  * Upstream Integration Macros (USDT)
  * ----------------------------------------------------*/
 
-/* * If building within full glibc with SystemTap headers, this macro 
- * is already defined. If not, we define a no-op fallback so 
- * the code compiles for your demo.
+/*
+ * IMPORTANT:
+ * - When building inside glibc, we want the real LIBC_PROBE macros
+ *   so USDT notes are emitted into libc.so.6.
+ * - When building standalone (demo/LD_PRELOAD), we can fall back
+ *   to a no-op if probe headers aren't available.
+ */
+#ifdef __GLIBC__
+/* glibc provides the SystemTap/SDT probe macros here when enabled */
+# include <stap-probe.h>
+#endif
+
+/*
+ * If building within full glibc with SystemTap headers, LIBC_PROBE is defined.
+ * If not, we define a fallback:
+ *   - in glibc builds: hard error (otherwise probes silently disappear)
+ *   - standalone builds: no-op fallback
  */
 #ifndef LIBC_PROBE
-# define LIBC_PROBE(name, n, ...) do { } while (0)
+# ifdef __GLIBC__
+#  error "LIBC_PROBE is not defined. Enable glibc SystemTap/SDT probe support (and ensure stap-probe.h is available)."
+# else
+#  define LIBC_PROBE(name, n, ...) do { } while (0)
+# endif
 #endif
 
 /* ------------------------------------------------------
@@ -43,7 +62,6 @@ static const char *mp_out_base = NULL;               /* binary dump path */
 
 /* Per-thread TLS state */
 __thread struct __mp_tls __mp_tls_state;
-
 
 /* ------------------------------------------------------
  * External hook (weak): downstream tools may override.
@@ -62,7 +80,8 @@ __mp_on_sample(struct mp_sample_ctx *ctx)
 #define MP_MAX_HANDLERS 4
 static mp_sample_handler_t mp_handlers[MP_MAX_HANDLERS] = {0};
 
-/* * Registers a callback safely using Atomics.
+/*
+ * Registers a callback safely using Atomics.
  * Returns 0 on success, -1 if no slots available.
  */
 int
@@ -72,13 +91,13 @@ __mp_register_handler(mp_sample_handler_t cb)
 
     for (int i = 0; i < MP_MAX_HANDLERS; ++i) {
         mp_sample_handler_t expected = NULL;
-        
+
         /* atomic_compare_exchange: if slot is NULL, swap in 'cb' */
-        if (__atomic_compare_exchange_n(&mp_handlers[i], 
-                                        &expected, 
-                                        cb, 
-                                        0, 
-                                        __ATOMIC_RELEASE, 
+        if (__atomic_compare_exchange_n(&mp_handlers[i],
+                                        &expected,
+                                        cb,
+                                        0,
+                                        __ATOMIC_RELEASE,
                                         __ATOMIC_RELAXED)) {
             return 0; /* Registered */
         }
@@ -115,26 +134,46 @@ mp_prng_next(struct __mp_tls *st)
     return x * 0x2545F4914F6CDD1DULL;
 }
 
+/*
+ * Strict-aliasing-safe bit-casts.
+ * glibc builds with -Werror=strict-aliasing; do NOT type-pun via pointers.
+ */
+static inline uint64_t
+mp_bitcast_u64_from_double(double d)
+{
+    uint64_t u;
+    memcpy(&u, &d, sizeof u);
+    return u;
+}
+
+static inline double
+mp_bitcast_double_from_u64(uint64_t u)
+{
+    double d;
+    memcpy(&d, &u, sizeof d);
+    return d;
+}
+
 /* Fast approximation of natural log: ln(x) */
 static double
 mp_log(double x)
 {
     if (x <= 0.0) return -1.0/0.0; /* -Inf */
 
-    /* Cast double to 64-bit int to access bits */
-    uint64_t bits = *(uint64_t*)&x;
-    
+    /* Access bits safely (no strict-aliasing violation) */
+    uint64_t bits = mp_bitcast_u64_from_double(x);
+
     /* Extract exponent (bits 52-62) - bias 1023 */
     int64_t e = ((bits >> 52) & 0x7FF) - 1023;
-    
+
     /* Extract mantissa, normalize to [1.0, 2.0) */
     uint64_t m_bits = (bits & 0xFFFFFFFFFFFFFULL) | (1023ULL << 52);
-    double m = *(double*)&m_bits;
-    
+    double m = mp_bitcast_double_from_u64(m_bits);
+
     /* Polynomial for ln(m) where m in [1.0, 2.0) */
     double y = m - 1.0;
     double log_m = y * (1.0 - y * (0.5 - y * 0.33333333));
-    
+
     return log_m + (double)e * 0.69314718056;
 }
 
@@ -145,13 +184,13 @@ mp_compute_next_sample(struct __mp_tls *st)
     uint64_t r = mp_prng_next(st);
     /* 53 bits of randomness for double precision */
     double u = (r >> 11) * (1.0 / 9007199254740992.0);
-    
+
     if (__glibc_unlikely(u <= 0.0)) u = 1e-10;
 
     double val = -mp_log(u) * (double)mp_sample_stride_bytes;
-    
+
     if (val > (double)UINT64_MAX) return UINT64_MAX;
-    
+
     uint64_t next = (uint64_t)val;
     return (next == 0) ? 1 : next;
 }
@@ -197,19 +236,18 @@ mp_thread_init_if_needed(struct __mp_tls *st)
     if (__glibc_unlikely(st->rng == 0)) {
         uint64_t seed = (uintptr_t)st;
         struct timespec ts;
-        
+
         if (clock_gettime(CLOCK_MONOTONIC, &ts) == 0) {
             seed ^= (uint64_t)ts.tv_nsec;
         }
-        
+
         seed ^= (uint64_t)getpid();
         if (seed == 0) seed = 0xCAFEBABE;
-        
+
         st->rng = seed;
         st->bytes_until_sample = mp_compute_next_sample(st);
     }
 }
-
 
 /* ------------------------------------------------------
  * Hashing & aggregation
@@ -304,19 +342,19 @@ __mp_on_alloc(size_t size, void *ptr)
         .tstate   = st,
     };
 
-    /* * OBSERVABILITY POINT 1: USDT Probe (The Upstream Method) 
+    /*
+     * OBSERVABILITY POINT 1: USDT Probe (The Upstream Method)
      * Exposed to bpftrace, systemtap, perf.
      */
     LIBC_PROBE (memory_prof_sample, 3, size, ptr, alloc_pc);
 
-    /* * OBSERVABILITY POINT 2: Internal Callbacks (The Dev Method)
+    /*
+     * OBSERVABILITY POINT 2: Internal Callbacks (The Dev Method)
      * Exposed to in-process tools (Leak detectors, Dashboards).
      */
     __mp_on_sample(&ctx);       /* Weak symbol hook */
     mp_invoke_handlers(&ctx);   /* Registered callbacks */
 }
-
-
 
 /* ------------------------------------------------------
  * Binary dump format
@@ -400,15 +438,14 @@ mp_dump_thread_to_file(const struct __mp_tls *st)
 
         struct mp_file_site_disk fs;
         fs.pc            = (uint64_t)s->pc;
-        fs.sample_count = s->sample_count;
-        fs.total_bytes  = s->total_bytes;
+        fs.sample_count  = s->sample_count;
+        fs.total_bytes   = s->total_bytes;
 
         (void)write(fd, &fs, sizeof fs);
     }
 
     (void)close(fd);
 }
-
 
 /* ------------------------------------------------------
  * Destructor: dump stats + binary snapshot
