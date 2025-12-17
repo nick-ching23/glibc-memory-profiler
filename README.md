@@ -71,6 +71,10 @@ sudo apt install bison gperf
 ./build-glibc.sh
 ```
 
+## Benchmarking
+
+See [BENCHMARK.md](BENCHMARK.md).
+
 ## Running the Application
 
 You must explicitly invoke the custom dynamic loader from the freshly built glibc and set the library path.

@@ -10,7 +10,7 @@ Build both the custom glibc and original glibc.
 ```bash
 cd malloc-benchmarks
 make
-./benchmark.py
+./scripts/benchmark.py
 ```
 
 ## Sample Output
